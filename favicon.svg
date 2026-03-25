@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Story Forge icon">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1b1714"/>
+      <stop offset="100%" stop-color="#2d241c"/>
+    </linearGradient>
+    <linearGradient id="steel" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f4eee4"/>
+      <stop offset="100%" stop-color="#b7a58e"/>
+    </linearGradient>
+    <linearGradient id="ember" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffcb6b"/>
+      <stop offset="55%" stop-color="#e88a32"/>
+      <stop offset="100%" stop-color="#9e3f16"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <path d="M38 178c0-10 8-18 18-18h59l17-64h38l-10 28h30c16 0 28 12 28 28 0 14-11 25-25 25h-17l-7 25H56c-10 0-18-8-18-18v-6z" fill="url(#steel)"/>
+  <path d="M83 64h90l-16 30H99z" fill="url(#ember)"/>
+  <path d="M92 49h72l-10 19h-52z" fill="#ffd99a"/>
+  <circle cx="179" cy="84" r="10" fill="#ffd27f"/>
+  <path d="M183 66l3 8 8 3-8 3-3 8-3-8-8-3 8-3z" fill="#fff0bf"/>
+  <path d="M64 176h58l7-25h54c8 0 13-5 13-12 0-7-5-12-13-12h-45l11-31h-4l-17 64H64c-3 0-6 3-6 6v4c0 3 3 6 6 6z" fill="#7f6e59" opacity=".35"/>
+</svg>

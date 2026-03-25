@@ -1,0 +1,57 @@
+{
+  "name": "story-forge",
+  "version": "0.1.0",
+  "description": "Story Forge desktop fiction workspace with OpenRouter integration",
+  "author": "Story Forge",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win nsis portable"
+  },
+  "productName": "Story Forge",
+  "build": {
+    "appId": "com.storyforge.desktop",
+    "productName": "Story Forge",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "index.html",
+      "style.css",
+      "app.js",
+      "main.js",
+      "preload.js",
+      "favicon.svg",
+      "story-forge.ico",
+      "aiisms-default.js",
+      "services/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "story-forge.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
+      "installerIcon": "story-forge.ico",
+      "uninstallerIcon": "story-forge.ico",
+      "installerHeaderIcon": "story-forge.ico",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Story Forge"
+    },
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}-${arch}.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^24.13.3"
+  }
+}
