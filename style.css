@@ -806,6 +806,34 @@ html, body {
   font-size: 14px;
   flex-shrink: 0;
 }
+.ss-parts-input {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ss-parts-input label {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+.ss-parts-input input {
+  width: 110px;
+  background: var(--bg-mid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 7px 10px;
+  text-align: center;
+}
+.ss-parts-input input:focus {
+  outline: none;
+  border-color: var(--gold);
+}
 
 /* Short story progress bar in topbar */
 #topbar-wc-area { display: flex; align-items: center; }

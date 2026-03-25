@@ -49,6 +49,17 @@ function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
+function getShortStoryPartCount(proj) {
+  const raw = parseInt(proj?.ssPartCount, 10);
+  if (!Number.isFinite(raw)) return 4;
+  return Math.min(20, Math.max(2, raw));
+}
+
+function shortStoryPartSpanLabel(partCount) {
+  if (partCount <= 2) return 'Parts 1 and 2';
+  return `Parts 1 through ${partCount}`;
+}
+
 const CHAPTER_FONT_MAP = {
   prose: "'Crimson Pro', Georgia, serif",
   modern: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
@@ -508,12 +519,14 @@ document.querySelectorAll('#edit-story-type-picker .story-type-btn').forEach(btn
 function updateEditSsSub() {
   const min = document.getElementById('edit-ss-min')?.value || 1000;
   const max = document.getElementById('edit-ss-max')?.value || 2500;
+  const parts = parseInt(document.getElementById('edit-ss-parts')?.value, 10) || 4;
   const sub = document.getElementById('edit-ss-sub');
-  if (sub) sub.textContent = `${parseInt(min).toLocaleString()}–${parseInt(max).toLocaleString()} words`;
+  if (sub) sub.textContent = `${parseInt(min).toLocaleString()}–${parseInt(max).toLocaleString()} words • ${parts} parts`;
 }
 
 document.getElementById('edit-ss-min')?.addEventListener('input', updateEditSsSub);
 document.getElementById('edit-ss-max')?.addEventListener('input', updateEditSsSub);
+document.getElementById('edit-ss-parts')?.addEventListener('input', updateEditSsSub);
 
 document.getElementById('create-project-btn').addEventListener('click', createProject);
 document.getElementById('proj-title-input').addEventListener('keydown', e => {
@@ -528,6 +541,7 @@ function createProject() {
   const storyType = document.querySelector('#new-story-type-picker .story-type-btn.active')?.dataset.type || 'novel';
   const ssMin = storyType === 'short_story' ? (parseInt(document.getElementById('new-ss-min').value) || 1000) : null;
   const ssMax = storyType === 'short_story' ? (parseInt(document.getElementById('new-ss-max').value) || 2500) : null;
+  const ssPartCount = storyType === 'short_story' ? getShortStoryPartCount({ ssPartCount: document.getElementById('new-ss-parts').value }) : null;
   const proj = {
     id: genId(),
     title,
@@ -536,6 +550,7 @@ function createProject() {
     storyType,
     ssMin,
     ssMax,
+    ssPartCount,
     chapters: [],
     codex: [],
     notes: [],
@@ -588,6 +603,7 @@ function clearProjectForm() {
   document.getElementById('new-ss-range').classList.add('hidden');
   document.getElementById('new-ss-min').value = 1000;
   document.getElementById('new-ss-max').value = 2500;
+  document.getElementById('new-ss-parts').value = 4;
 }
 
 // â”€â”€â”€ EDIT PROJECT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -608,6 +624,7 @@ function openEditProjectModal(projId) {
   editSsRange.classList.toggle('hidden', st !== 'short_story');
   document.getElementById('edit-ss-min').value = proj.ssMin ?? 1000;
   document.getElementById('edit-ss-max').value = proj.ssMax ?? 2500;
+  document.getElementById('edit-ss-parts').value = getShortStoryPartCount(proj);
   if (st === 'short_story') updateEditSsSub();
   // Set genre select
   const sel = document.getElementById('edit-proj-genre-input');
@@ -735,9 +752,11 @@ function saveEditProject() {
   if (proj.storyType === 'short_story') {
     proj.ssMin = parseInt(document.getElementById('edit-ss-min').value) || 1000;
     proj.ssMax = parseInt(document.getElementById('edit-ss-max').value) || 2500;
+    proj.ssPartCount = getShortStoryPartCount({ ssPartCount: document.getElementById('edit-ss-parts').value });
   } else {
     proj.ssMin = null;
     proj.ssMax = null;
+    proj.ssPartCount = null;
   }
   const targetVal = parseInt(document.getElementById('edit-proj-target-input').value);
   proj.targetWordCount = isNaN(targetVal) || targetVal <= 0 ? 0 : targetVal;
@@ -2646,19 +2665,22 @@ const AI_MODE_META = {
   },
 };
 
-const SHORT_STORY_MODE_PROMPT = [
-  'SHORT STORY MODE:',
-  'Write exactly one part at a time for a 4-part short story.',
-  'Label the parts Part 1, Part 2, Part 3, and Part 4.',
-  'After completing a drafted part, print exactly: "Shall I continue with the next part?" and stop.',
-  'Use scene breaks only when time, location, or point-of-view changes, formatted as: -****-',
-  'Do not open Part 1 by naming or directly referencing a town, village, city, hamlet, or geographic location.',
-  'Print "The End" only after the final line of Part 4.',
-  'Blend psychological and supernatural horror with controlled, precise lyricism.',
-  'Show emotion through sensory detail and action rather than direct emotional labeling.',
-  'Vary sentence lengths, avoid cliches, keep metaphors lean, and do not use em dashes.',
-  'Build tension progressively across all four parts, with Part 4 containing the peak.',
-].join('\n');
+function buildShortStoryModePrompt(partCount) {
+  const span = shortStoryPartSpanLabel(partCount);
+  return [
+    'SHORT STORY MODE:',
+    `Write exactly one part at a time for a ${partCount}-part short story.`,
+    `Label the parts ${span}.`,
+    'After completing a drafted part, print exactly: "Shall I continue with the next part?" and stop.',
+    'Use scene breaks only when time, location, or point-of-view changes, formatted as: -****-',
+    'Do not open Part 1 by naming or directly referencing a town, village, city, hamlet, or geographic location.',
+    `Print "The End" only after the final line of Part ${partCount}.`,
+    'Blend psychological and supernatural horror with controlled, precise lyricism.',
+    'Show emotion through sensory detail and action rather than direct emotional labeling.',
+    'Vary sentence lengths, avoid cliches, keep metaphors lean, and do not use em dashes.',
+    `Build tension progressively across all ${partCount} parts, with Part ${partCount} containing the peak.`,
+  ].join('\n');
+}
 
 // â”€â”€ API Key management â”€â”€
 
@@ -3045,33 +3067,35 @@ function updateQuickBtns() {
   });
 }
 
-const SHORT_STORY_QUICK_BTNS = {
-  continue: [
-    { label: 'Draft Part 1', prompt: 'Draft Part 1 of this short story. Follow the short story instructions exactly, reveal one concrete backstory detail through action or dialogue, and stop after Part 1 with "Shall I continue with the next part?"' },
-    { label: 'Draft next part', prompt: 'Draft the next numbered part of this short story only. Raise the tension from where the last part ended, follow the style rules exactly, and stop with "Shall I continue with the next part?"' },
-    { label: 'Sharpen ending', prompt: 'Draft or revise the ending portion of the current part so the tension rises cleanly into the next part without feeling rushed or overwritten.' },
-  ],
-  brainstorm: [
-    { label: 'Plan 4-part arc', prompt: 'Plan this short story as a 4-part arc. For each part, give the main dramatic move, the key transformation, and how tension rises.' },
-    { label: 'Map tension rise', prompt: 'Map how tension should escalate across Parts 1 through 4, with a concrete turning point for each part.' },
-    { label: 'Suggest 3 directions', prompt: 'Suggest 3 different directions the next part could take while preserving the current tone, constraints, and transformation theme.' },
-  ],
-  rewrite: [
-    { label: 'Revise to match rules', prompt: 'Revise this part so it better matches the short story instructions: lean prose, no cliches, no em dashes, stronger sensory detail, and sharper tension.' },
-    { label: 'Make prose leaner', prompt: 'Tighten this part into more restrained, vivid prose. Cut filler, adverbs, and generic phrasing without losing atmosphere.' },
-    { label: 'Add sensory detail', prompt: 'Revise this part to deepen atmosphere through specific sensory details and action, without purple prose.' },
-  ],
-  compliance: [
-    { label: 'Check rule compliance', prompt: 'Audit the current part against the short story instructions. List any violations or weak spots under Structure, Style, Tension, and Process. Be specific.' },
-    { label: 'Check no em dashes', prompt: 'Check this part for em dashes, cliches, direct emotional labeling, and overlong metaphors. Quote only the offending phrases and suggest replacements.' },
-    { label: 'Check part structure', prompt: 'Check whether this part is correctly labeled, uses scene breaks only when needed, escalates tension, and ends in the right place for a numbered part story.' },
-  ],
-  chat: [
-    { label: 'Story coach', prompt: 'Coach me on this short story part. Focus on pacing, dread, transformation, and whether the prose feels controlled instead of overwritten.' },
-    { label: 'Author restraint', prompt: 'Explain where this part leans too ornate or too flat, and how to move it toward precise, restrained lyricism.' },
-    { label: 'Strengthen tension', prompt: 'Explain how to strengthen suspense and unease in this part without relying on cliches or direct emotional labeling.' },
-  ],
-};
+function buildShortStoryQuickBtns(partCount) {
+  return {
+    continue: [
+      { label: 'Draft Part 1', prompt: 'Draft Part 1 of this short story. Follow the short story instructions exactly, reveal one concrete backstory detail through action or dialogue, and stop after Part 1 with "Shall I continue with the next part?"' },
+      { label: 'Draft next part', prompt: 'Draft the next numbered part of this short story only. Raise the tension from where the last part ended, follow the style rules exactly, and stop with "Shall I continue with the next part?"' },
+      { label: 'Sharpen ending', prompt: `Draft or revise the ending portion of the current part so the tension rises cleanly toward Part ${partCount} without feeling rushed or overwritten.` },
+    ],
+    brainstorm: [
+      { label: `Plan ${partCount}-part arc`, prompt: `Plan this short story as a ${partCount}-part arc. For each part, give the main dramatic move, the key transformation, and how tension rises.` },
+      { label: 'Map tension rise', prompt: `Map how tension should escalate across ${shortStoryPartSpanLabel(partCount)}, with a concrete turning point for each part.` },
+      { label: 'Suggest 3 directions', prompt: 'Suggest 3 different directions the next part could take while preserving the current tone, constraints, and transformation theme.' },
+    ],
+    rewrite: [
+      { label: 'Revise to match rules', prompt: 'Revise this part so it better matches the short story instructions: lean prose, no cliches, no em dashes, stronger sensory detail, and sharper tension.' },
+      { label: 'Make prose leaner', prompt: 'Tighten this part into more restrained, vivid prose. Cut filler, adverbs, and generic phrasing without losing atmosphere.' },
+      { label: 'Add sensory detail', prompt: 'Revise this part to deepen atmosphere through specific sensory details and action, without purple prose.' },
+    ],
+    compliance: [
+      { label: 'Check rule compliance', prompt: 'Audit the current part against the short story instructions. List any violations or weak spots under Structure, Style, Tension, and Process. Be specific.' },
+      { label: 'Check no em dashes', prompt: 'Check this part for em dashes, cliches, direct emotional labeling, and overlong metaphors. Quote only the offending phrases and suggest replacements.' },
+      { label: 'Check part structure', prompt: `Check whether this part is correctly labeled, uses scene breaks only when needed, escalates tension, and lands correctly in a ${partCount}-part story.` },
+    ],
+    chat: [
+      { label: 'Story coach', prompt: 'Coach me on this short story part. Focus on pacing, dread, transformation, and whether the prose feels controlled instead of overwritten.' },
+      { label: 'Author restraint', prompt: 'Explain where this part leans too ornate or too flat, and how to move it toward precise, restrained lyricism.' },
+      { label: 'Strengthen tension', prompt: 'Explain how to strengthen suspense and unease in this part without relying on cliches or direct emotional labeling.' },
+    ],
+  };
+}
 
 function updateAIModeUI() {
   const proj = getProject();
@@ -3095,7 +3119,8 @@ function updateQuickBtns() {
   const container = document.querySelector('.ai-quick-btns');
   const proj = getProject();
   const isShortStory = proj?.storyType === 'short_story';
-  const buttonSet = isShortStory ? SHORT_STORY_QUICK_BTNS : {
+  const ssPartCount = getShortStoryPartCount(proj);
+  const buttonSet = isShortStory ? buildShortStoryQuickBtns(ssPartCount) : {
     continue: [
       { label: 'Auto-continue', prompt: 'Continue this scene naturally, matching the established tone, voice, and style.' },
       { label: 'Suggest paths', prompt: 'Suggest 3 different directions this scene could go next, each with a brief description.' },
@@ -3388,6 +3413,7 @@ function buildContextParts() {
   const { precedingText, currentSceneText } = gatherManuscriptContext();
   const userPrompt = document.getElementById('ai-prompt-input')?.value || '';
   const isShortStory = proj?.storyType === 'short_story';
+  const ssPartCount = getShortStoryPartCount(proj);
 
   // Smart codex selection using aiContext field:
   // "always"  â†’ always included regardless of scene content
@@ -3421,7 +3447,7 @@ function buildContextParts() {
 
   const shortStoryModeInstructions = {
     continue: 'DRAFT exactly one short-story part at a time. Respect the process rules, structure rules, and style constraints. End by asking "Shall I continue with the next part?"',
-    brainstorm: 'PLAN the short story as a four-part arc. Focus on transformation, tension escalation, and clean structure without drafting multiple full parts unless asked.',
+    brainstorm: `PLAN the short story as a ${ssPartCount}-part arc. Focus on transformation, tension escalation, and clean structure without drafting multiple full parts unless asked.`,
     rewrite: 'REVISE the current short-story part to better fit the rules: lean prose, no cliches, no em dashes, stronger sensory detail, and progressive tension.',
     compliance: 'AUDIT the current short-story part for rule compliance. Organize findings under clear headings and prioritize concrete, fixable issues.',
     chat: 'Act as a SHORT STORY COACH. Give craft feedback focused on structure, dread, pacing, transformation, and precise prose.',
@@ -3468,10 +3494,12 @@ function buildSystemPrompt() {
   if (isShortStory) {
     const ssMin = proj.ssMin ?? 1000;
     const ssMax = proj.ssMax ?? 2500;
+    const ssPartCount = getShortStoryPartCount(proj);
     const wc = projectWordCount(proj);
     const remaining = Math.max(0, ssMax - wc);
     ctx += `SHORT STORY CONSTRAINTS:\n`;
     ctx += `• Target range: ${ssMin.toLocaleString()}–${ssMax.toLocaleString()} words total\n`;
+    ctx += `• Part count: ${ssPartCount} parts (Part 1 through Part ${ssPartCount})\n`;
     ctx += `• Words written so far: ${wc.toLocaleString()}\n`;
     ctx += `• Remaining budget: ${remaining.toLocaleString()} words\n`;
     if (remaining < 300) {
@@ -3480,7 +3508,7 @@ function buildSystemPrompt() {
       ctx += `• Write content that fits naturally within this budget. Pace accordingly.\n`;
     }
     ctx += '\n';
-    ctx += `${SHORT_STORY_MODE_PROMPT}\n\n`;
+    ctx += `${buildShortStoryModePrompt(ssPartCount)}\n\n`;
   }
 
   if (p.characters) ctx += `CODEX ENTRIES:\n${p.characters}\n\n`;
