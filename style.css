@@ -2387,6 +2387,13 @@ html, body {
   align-self: start;
 }
 .ai-panel-close:hover { color: var(--text-primary); background: var(--bg-hover); }
+.ai-panel-clear {
+  grid-column: 2;
+  grid-row: 2;
+  justify-self: end;
+  align-self: center;
+  padding: 4px 8px;
+}
 
 .ai-modes {
   display: flex;

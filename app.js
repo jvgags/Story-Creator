@@ -2809,6 +2809,7 @@ document.getElementById('model-search-input').addEventListener('input', (e) => {
 
 document.getElementById('ai-assistant-btn').addEventListener('click', toggleAIPanel);
 document.getElementById('ai-panel-close').addEventListener('click', closeAIPanel);
+document.getElementById('ai-clear-chat-btn').addEventListener('click', clearAIConversation);
 document.getElementById('ai-change-model-btn').addEventListener('click', () => {
   closeAIPanel();
   document.getElementById('settings-modal').classList.remove('hidden');
@@ -2831,6 +2832,26 @@ function openAIPanel() {
 function closeAIPanel() {
   document.getElementById('ai-panel').classList.add('hidden');
   document.getElementById('app-screen').classList.remove('ai-open');
+}
+
+function clearAIConversation() {
+  if (AI.isStreaming) return;
+  AI.conversation = [];
+  AI.currentMode = 'continue';
+  document.querySelectorAll('.ai-mode-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.mode === 'continue');
+  });
+  updateQuickBtns();
+  updateAIModeUI();
+  const chat = document.getElementById('ai-chat-area');
+  chat.innerHTML = `
+    <div class="ai-welcome" id="ai-welcome">
+      <div class="ai-welcome-icon">✦</div>
+      <p>Select a mode and start a conversation. Your scene context is sent automatically.</p>
+    </div>
+  `;
+  document.getElementById('ai-prompt-input').value = '';
+  document.getElementById('ai-prompt-input').focus();
 }
 
 function updateAIModelLabel() {
@@ -3366,6 +3387,31 @@ function htmlToText(html) {
   return (d.textContent || '').replace(/\s+/g, ' ').trim();
 }
 
+function htmlToMarkdownSimple(html) {
+  if (!html) return '';
+  const d = document.createElement('div');
+  d.innerHTML = html;
+
+  d.querySelectorAll('br').forEach((br) => br.replaceWith('\n'));
+  d.querySelectorAll('p, div').forEach((el) => el.append('\n\n'));
+  d.querySelectorAll('li').forEach((li) => li.prepend('- '));
+  d.querySelectorAll('ul, ol').forEach((list) => list.append('\n'));
+  d.querySelectorAll('strong, b').forEach((el) => {
+    el.textContent = `**${el.textContent}**`;
+  });
+  d.querySelectorAll('em, i').forEach((el) => {
+    el.textContent = `*${el.textContent}*`;
+  });
+  d.querySelectorAll('code').forEach((el) => {
+    el.textContent = `\`${el.textContent}\``;
+  });
+
+  return (d.textContent || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /**
  * Gather all text from the manuscript in order, up to and including the
  * current scene. Returns { precedingText, currentSceneText } where:
@@ -3431,7 +3477,7 @@ function buildContextParts() {
 
   // Combine, deduplicate, cap at 14 total
   const seen = new Set();
-  const chars = [...alwaysEntries, ...autoEntries].filter(e => {
+  const selectedCodexEntries = [...alwaysEntries, ...autoEntries].filter(e => {
     if (seen.has(e.id)) return false;
     seen.add(e.id);
     return true;
@@ -3460,8 +3506,8 @@ function buildContextParts() {
     scene:          sc ? sc.title : null,
     precedingText:  precedingText || null,
     currentSceneText: currentSceneText || null,
-    characters:     chars.length > 0
-      ? chars.map(c => {
+    characters:     selectedCodexEntries.length > 0
+      ? selectedCodexEntries.map(c => {
           const tag = c.aiContext === 'always' ? ' [always]' : ' [detected]';
           const lines = [`• [${CODEX_SINGULAR[c.category] || c.category}${tag}] ${c.name}`];
           if (c.role) lines.push(`  Role: ${c.role}`);
@@ -3470,6 +3516,7 @@ function buildContextParts() {
           return lines.join('\n');
         }).join('\n\n')
       : null,
+    codexEntries:   selectedCodexEntries,
     mode:           isShortStory
       ? (shortStoryModeInstructions[AI.currentMode] || shortStoryModeInstructions.chat)
       : (modeInstructions[AI.currentMode] || modeInstructions.chat),
@@ -3535,7 +3582,7 @@ function buildSystemPrompt() {
 
 // â”€â”€ Context Preview â”€â”€
 
-let _previewView = 'structured'; // 'structured' | 'json' | 'xml'
+let _previewView = 'structured'; // 'structured' | 'context' | 'json' | 'xml'
 
 document.getElementById('ai-preview-btn').addEventListener('click', () => {
   const preview = document.getElementById('ai-context-preview');
@@ -3631,6 +3678,8 @@ function renderContextPreview() {
 
   if (_previewView === 'structured') {
     renderStructuredPreview(container);
+  } else if (_previewView === 'context') {
+    renderContextOnlyPreview(container);
   } else if (_previewView === 'json') {
     renderRawPreview(container, 'json');
   } else if (_previewView === 'xml') {
@@ -3718,6 +3767,66 @@ function renderRawPreview(container, fmt) {
   `;
   wrap.querySelector('#copy-raw-btn').addEventListener('click', (e) => {
     copyToClipboard(rawText, e.currentTarget);
+  });
+  container.appendChild(wrap);
+}
+
+function codexContextLabel(entry) {
+  const cat = entry?.category || 'Other';
+  if (cat === 'Style Guide') return 'Writing Style';
+  if (cat === 'World Rules') return 'World Rules';
+  if (cat === 'Instructions') return 'Instructions';
+  if (cat === 'Synopsis') return 'Synopsis';
+  return CODEX_SINGULAR[cat] || cat;
+}
+
+function buildContextOnlyMarkdown() {
+  const parts = buildContextParts();
+  const entries = Array.isArray(parts.codexEntries) ? parts.codexEntries : [];
+  if (!entries.length) {
+    return '[Context:Start]\n_No Codex entries are currently included for this prompt._\n[Context:End]';
+  }
+
+  const used = new Map();
+  const lines = [];
+
+  entries.forEach((entry) => {
+    const base = codexContextLabel(entry);
+    const n = (used.get(base) || 0) + 1;
+    used.set(base, n);
+    const label = n > 1 ? `${base} ${n}` : base;
+    const contentLines = [];
+    if (entry.name && entry.name !== base && entry.name !== label) {
+      contentLines.push(`Title: ${entry.name}`);
+    }
+    if (entry.role) contentLines.push(`Role: ${entry.role}`);
+    if (entry.description) contentLines.push(htmlToMarkdownSimple(entry.description));
+    if (entry.notes) contentLines.push(`Notes:\n${htmlToMarkdownSimple(entry.notes)}`);
+    const body = contentLines.filter(Boolean).join('\n').trim();
+    lines.push(`[${label}:Start]`);
+    if (body) lines.push(body);
+    lines.push(`[${label}:End]`);
+    lines.push('');
+  });
+
+  return lines.join('\n').trim();
+}
+
+function renderContextOnlyPreview(container) {
+  const rawMarkdown = buildContextOnlyMarkdown();
+  const charCount = rawMarkdown.length;
+  const tokenCount = Math.ceil(charCount / 4);
+  const wrap = document.createElement('div');
+  wrap.className = 'ai-preview-raw';
+  wrap.innerHTML = `
+    <div class="ai-preview-raw-toolbar">
+      <span class="ai-preview-raw-meta">${charCount.toLocaleString()} chars · ~${tokenCount.toLocaleString()} tokens · context markdown</span>
+      <button class="ai-preview-copy-btn" id="copy-context-btn">📋 Copy</button>
+    </div>
+    <div class="ai-preview-raw-code">${esc(rawMarkdown)}</div>
+  `;
+  wrap.querySelector('#copy-context-btn').addEventListener('click', (e) => {
+    copyToClipboard(rawMarkdown, e.currentTarget);
   });
   container.appendChild(wrap);
 }
@@ -3818,13 +3927,72 @@ function insertTextIntoScene(text) {
     sel.addRange(range);
   }
 
-  // Convert markdown â†’ HTML then insert
-  const html = markdownToHtml(text.trim());
-  document.execCommand('insertHTML', false, html);
+  // Convert AI output into clean prose paragraphs for manuscript insertion.
+  // This prevents markdown emphasis from forcing bold/italic styling in the editor.
+  const html = aiTextToSceneHtml(text.trim());
+  // Ensure active inline formatting modes do not leak into inserted prose.
+  ['bold', 'italic', 'underline'].forEach((cmd) => {
+    try {
+      if (document.queryCommandState(cmd)) document.execCommand(cmd, false, null);
+    } catch {}
+  });
+  insertHtmlAtSelection(el, html);
 
   saveCurrentScene();
   document.getElementById('scene-wc').textContent = countWords(el.innerHTML) + ' words';
   updateTotalWC();
+}
+
+function insertHtmlAtSelection(container, html) {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  let range = sel.getRangeAt(0);
+  if (!container.contains(range.commonAncestorContainer)) {
+    range = document.createRange();
+    range.selectNodeContents(container);
+    range.collapse(false);
+  }
+
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const frag = document.createDocumentFragment();
+  while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+
+  range.deleteContents();
+  const lastNode = frag.lastChild;
+  range.insertNode(frag);
+
+  const after = document.createRange();
+  if (lastNode) {
+    after.setStartAfter(lastNode);
+  } else {
+    after.selectNodeContents(container);
+    after.collapse(false);
+  }
+  after.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(after);
+}
+
+function aiTextToSceneHtml(text) {
+  const plain = String(text || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/\*\*\*([^*\n]+?)\*\*\*/g, '$1')
+    .replace(/\*\*([^*\n]+?)\*\*/g, '$1')
+    .replace(/__([^_\n]+?)__/g, '$1')
+    .replace(/\*([^*\n]+?)\*/g, '$1')
+    .replace(/`([^`\n]+?)`/g, '$1')
+    .trim();
+
+  if (!plain) return '<p><br></p>';
+
+  return plain
+    .split(/\n{2,}/)
+    .map((paragraph) => `<p>${esc(paragraph).replace(/\n/g, '<br>')}</p>`)
+    .join('');
 }
 
 function appendAIMessage(role, text, streaming = false) {
