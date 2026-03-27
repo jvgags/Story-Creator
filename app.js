@@ -24,6 +24,7 @@ const STATE = {
     lineHeight: 1.9,
     theme: 'dark',
     chapterFontKey: 'prose',
+    sceneIndentMode: 'none',
     contextChars: 2000,
     aiIsmsEnabled: true,
     aiIsmsList: [],
@@ -1845,6 +1846,12 @@ document.getElementById('settings-line-spacing').addEventListener('change', (e) 
   save();
 });
 
+document.getElementById('settings-scene-indent').addEventListener('change', (e) => {
+  STATE.settings.sceneIndentMode = e.target.value === 'indent' ? 'indent' : 'none';
+  applyEditorSettings();
+  save();
+});
+
 document.getElementById('settings-chapter-font').addEventListener('change', (e) => {
   const key = e.target.value;
   STATE.settings.chapterFontKey = CHAPTER_FONT_MAP[key] ? key : 'prose';
@@ -1885,6 +1892,7 @@ function applyEditorSettings() {
   const s = STATE.settings;
   document.documentElement.style.setProperty('--editor-font-size', s.fontSize + 'px');
   document.documentElement.style.setProperty('--editor-line-height', s.lineHeight);
+  document.documentElement.style.setProperty('--scene-paragraph-indent', s.sceneIndentMode === 'indent' ? '2em' : '0');
   // Keep toolbar dropdown in sync
   const sel = document.getElementById('font-size-select');
   if (sel) {
@@ -3991,7 +3999,7 @@ function aiTextToSceneHtml(text) {
 
   return plain
     .split(/\n{2,}/)
-    .map((paragraph) => `<p>${esc(paragraph).replace(/\n/g, '<br>')}</p>`)
+    .map((paragraph) => `<p style="font-weight:400;">${esc(paragraph).replace(/\n/g, '<br>')}</p>`)
     .join('');
 }
 
@@ -4066,6 +4074,7 @@ function populateSettingsModal() {
   document.getElementById('settings-font-size').value = STATE.settings.fontSize;
   document.getElementById('settings-font-label').textContent = STATE.settings.fontSize + 'px';
   document.getElementById('settings-line-spacing').value = STATE.settings.lineHeight;
+  document.getElementById('settings-scene-indent').value = STATE.settings.sceneIndentMode === 'indent' ? 'indent' : 'none';
   document.getElementById('settings-chapter-font').value = resolveChapterFontKey();
   const ctxChars = STATE.settings.contextChars || 2000;
   document.getElementById('settings-context-chars').value = ctxChars;

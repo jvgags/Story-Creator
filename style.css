@@ -36,6 +36,7 @@
   --editor-font-size: 18px;
   --editor-line-height: 1.9;
   --chapter-font-family: var(--font-prose);
+  --scene-paragraph-indent: 0;
 
   --sidebar-width: 240px;
   --topbar-height: 52px;
@@ -1248,7 +1249,7 @@ html, body {
 }
 .chapter-read-scene-body p { margin-bottom: 1em; }
 .chapter-read-scene-body p:first-child { text-indent: 0; }
-.chapter-read-scene-body p + p { text-indent: 2em; }
+.chapter-read-scene-body p + p { text-indent: var(--scene-paragraph-indent); }
 
 /* Scene break separator between scenes */
 .chapter-read-break {
@@ -1396,7 +1397,11 @@ html, body {
 
 .scene-content p { margin-bottom: 1em; }
 .scene-content p:first-child { text-indent: 0; }
-.scene-content p + p { text-indent: 2em; }
+.scene-content p + p { text-indent: var(--scene-paragraph-indent); }
+
+.focus-editor p { margin-bottom: 1em; }
+.focus-editor p:first-child { text-indent: 0; }
+.focus-editor p + p { text-indent: var(--scene-paragraph-indent); }
 
 .ai-ism-hit {
   text-decoration-line: underline;
