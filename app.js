@@ -56,6 +56,10 @@ function getShortStoryPartCount(proj) {
   return Math.min(20, Math.max(2, raw));
 }
 
+function isShortStoryStrictCap(proj) {
+  return !!proj?.ssStrictCap;
+}
+
 function shortStoryPartSpanLabel(partCount) {
   if (partCount <= 2) return 'Parts 1 and 2';
   return `Parts 1 through ${partCount}`;
@@ -521,13 +525,15 @@ function updateEditSsSub() {
   const min = document.getElementById('edit-ss-min')?.value || 1000;
   const max = document.getElementById('edit-ss-max')?.value || 2500;
   const parts = parseInt(document.getElementById('edit-ss-parts')?.value, 10) || 4;
+  const capMode = document.getElementById('edit-ss-cap-mode')?.value === 'strict' ? 'strict cap' : 'allow clean overage';
   const sub = document.getElementById('edit-ss-sub');
-  if (sub) sub.textContent = `${parseInt(min).toLocaleString()}–${parseInt(max).toLocaleString()} words • ${parts} parts`;
+  if (sub) sub.textContent = `${parseInt(min).toLocaleString()}–${parseInt(max).toLocaleString()} words • ${parts} parts • ${capMode}`;
 }
 
 document.getElementById('edit-ss-min')?.addEventListener('input', updateEditSsSub);
 document.getElementById('edit-ss-max')?.addEventListener('input', updateEditSsSub);
 document.getElementById('edit-ss-parts')?.addEventListener('input', updateEditSsSub);
+document.getElementById('edit-ss-cap-mode')?.addEventListener('change', updateEditSsSub);
 
 document.getElementById('create-project-btn').addEventListener('click', createProject);
 document.getElementById('proj-title-input').addEventListener('keydown', e => {
@@ -543,6 +549,7 @@ function createProject() {
   const ssMin = storyType === 'short_story' ? (parseInt(document.getElementById('new-ss-min').value) || 1000) : null;
   const ssMax = storyType === 'short_story' ? (parseInt(document.getElementById('new-ss-max').value) || 2500) : null;
   const ssPartCount = storyType === 'short_story' ? getShortStoryPartCount({ ssPartCount: document.getElementById('new-ss-parts').value }) : null;
+  const ssStrictCap = storyType === 'short_story' ? (document.getElementById('new-ss-cap-mode').value === 'strict') : null;
   const proj = {
     id: genId(),
     title,
@@ -552,6 +559,7 @@ function createProject() {
     ssMin,
     ssMax,
     ssPartCount,
+    ssStrictCap,
     chapters: [],
     codex: [],
     notes: [],
@@ -605,6 +613,7 @@ function clearProjectForm() {
   document.getElementById('new-ss-min').value = 1000;
   document.getElementById('new-ss-max').value = 2500;
   document.getElementById('new-ss-parts').value = 4;
+  document.getElementById('new-ss-cap-mode').value = 'allow_overage';
 }
 
 // â”€â”€â”€ EDIT PROJECT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -626,6 +635,7 @@ function openEditProjectModal(projId) {
   document.getElementById('edit-ss-min').value = proj.ssMin ?? 1000;
   document.getElementById('edit-ss-max').value = proj.ssMax ?? 2500;
   document.getElementById('edit-ss-parts').value = getShortStoryPartCount(proj);
+  document.getElementById('edit-ss-cap-mode').value = isShortStoryStrictCap(proj) ? 'strict' : 'allow_overage';
   if (st === 'short_story') updateEditSsSub();
   // Set genre select
   const sel = document.getElementById('edit-proj-genre-input');
@@ -754,10 +764,12 @@ function saveEditProject() {
     proj.ssMin = parseInt(document.getElementById('edit-ss-min').value) || 1000;
     proj.ssMax = parseInt(document.getElementById('edit-ss-max').value) || 2500;
     proj.ssPartCount = getShortStoryPartCount({ ssPartCount: document.getElementById('edit-ss-parts').value });
+    proj.ssStrictCap = document.getElementById('edit-ss-cap-mode').value === 'strict';
   } else {
     proj.ssMin = null;
     proj.ssMax = null;
     proj.ssPartCount = null;
+    proj.ssStrictCap = null;
   }
   const targetVal = parseInt(document.getElementById('edit-proj-target-input').value);
   proj.targetWordCount = isNaN(targetVal) || targetVal <= 0 ? 0 : targetVal;
@@ -3210,19 +3222,24 @@ async function sendAIMessage() {
   const userText = inp.value.trim();
   if (!userText || AI.isStreaming) return;
 
-  // Short story hard cap â€” block generation if at or over limit
+  // Short story budget awareness â€” never hard-stop or clamp mid-part.
+  // We let the model finish naturally and handle budget as guidance.
   const proj = getProject();
   if (proj?.storyType === 'short_story') {
     const ssMax = proj.ssMax ?? 2500;
     const wc = projectWordCount(proj);
-    if (wc >= ssMax) {
-      showAIError(`This short story has reached the ${ssMax.toLocaleString()}-word limit (${wc.toLocaleString()} words). Edit or trim existing content to continue.`);
-      return;
-    }
-    // Clamp word target to remaining budget
-    const remaining = ssMax - wc;
-    if (AI.wordTarget > remaining) {
-      AI.wordTarget = Math.max(50, remaining);
+    const strictCap = isShortStoryStrictCap(proj);
+    if (strictCap) {
+      if (wc >= ssMax) {
+        showAIError(`Strict cap is on and this short story is already at the max (${wc.toLocaleString()} / ${ssMax.toLocaleString()} words).`);
+        return;
+      }
+      const remaining = ssMax - wc;
+      if (AI.wordTarget > remaining) {
+        AI.wordTarget = Math.max(50, remaining);
+      }
+    } else if (wc > ssMax + 400) {
+      showAIError(`This short story is already ${wc.toLocaleString()} words (target max ${ssMax.toLocaleString()}). Continuing anyway so you can finish cleanly.`);
     }
   }
 
@@ -3550,15 +3567,19 @@ function buildSystemPrompt() {
     const ssMin = proj.ssMin ?? 1000;
     const ssMax = proj.ssMax ?? 2500;
     const ssPartCount = getShortStoryPartCount(proj);
+    const strictCap = isShortStoryStrictCap(proj);
     const wc = projectWordCount(proj);
     const remaining = Math.max(0, ssMax - wc);
     ctx += `SHORT STORY CONSTRAINTS:\n`;
     ctx += `• Target range: ${ssMin.toLocaleString()}–${ssMax.toLocaleString()} words total\n`;
     ctx += `• Part count: ${ssPartCount} parts (Part 1 through Part ${ssPartCount})\n`;
+    ctx += `• Cap behavior: ${strictCap ? 'Strict cap (do not exceed max)' : 'Allow clean overage to finish a part coherently'}\n`;
     ctx += `• Words written so far: ${wc.toLocaleString()}\n`;
     ctx += `• Remaining budget: ${remaining.toLocaleString()} words\n`;
-    if (remaining < 300) {
-      ctx += `• ⚠ BUDGET ALMOST EXHAUSTED — write a satisfying conclusion within the remaining budget. Do NOT exceed it.\n`;
+    if (remaining < 300 && strictCap) {
+      ctx += `• ⚠ BUDGET ALMOST EXHAUSTED — end cleanly within the remaining budget. Do NOT exceed max.\n`;
+    } else if (remaining < 300) {
+      ctx += `• ⚠ BUDGET ALMOST EXHAUSTED — prioritize a clean ending soon. If needed for coherence, a small overage is acceptable.\n`;
     } else {
       ctx += `• Write content that fits naturally within this budget. Pace accordingly.\n`;
     }
@@ -3571,7 +3592,11 @@ function buildSystemPrompt() {
   if (AI.currentMode === 'compliance') {
     ctx += `OUTPUT MODE: Return an audit, not story prose. Use concise headings and actionable notes.\n\n`;
   } else if (isShortStory && AI.currentMode === 'continue') {
-    ctx += `TARGET LENGTH: Aim for approximately ${AI.wordTarget} words for this single part or excerpt while staying within the short-story budget. Stop after one part only.\n\n`;
+    if (isShortStoryStrictCap(proj)) {
+      ctx += `TARGET LENGTH: Aim for approximately ${AI.wordTarget} words for this single part or excerpt. Stay within remaining budget and do not exceed max. Stop after one part only.\n\n`;
+    } else {
+      ctx += `TARGET LENGTH: Aim for approximately ${AI.wordTarget} words for this single part or excerpt. Prefer staying near budget, but do not cut off abruptly. Finish the part cleanly, then stop after one part only.\n\n`;
+    }
   } else {
     ctx += `TARGET LENGTH: You MUST write exactly ${AI.wordTarget} words, count carefully. Do not stop early. Do not summarize or truncate. Keep writing until you reach ${AI.wordTarget} words.\n\n`;
   }
@@ -3983,24 +4008,31 @@ function insertHtmlAtSelection(container, html) {
 }
 
 function aiTextToSceneHtml(text) {
-  const plain = String(text || '')
-    .replace(/\r\n/g, '\n')
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/^\s*\d+\.\s+/gm, '')
-    .replace(/\*\*\*([^*\n]+?)\*\*\*/g, '$1')
-    .replace(/\*\*([^*\n]+?)\*\*/g, '$1')
-    .replace(/__([^_\n]+?)__/g, '$1')
-    .replace(/\*([^*\n]+?)\*/g, '$1')
-    .replace(/`([^`\n]+?)`/g, '$1')
-    .trim();
+  const source = String(text || '').trim();
+  if (!source) return '<p><br></p>';
 
-  if (!plain) return '<p><br></p>';
+  const tmp = document.createElement('div');
+  tmp.innerHTML = markdownToHtml(source);
 
-  return plain
-    .split(/\n{2,}/)
-    .map((paragraph) => `<p style="font-weight:400;">${esc(paragraph).replace(/\n/g, '<br>')}</p>`)
-    .join('');
+  // Keep intentional formatting (italics, lists, etc.) but drop external styling noise.
+  tmp.querySelectorAll('*').forEach((node) => {
+    node.removeAttribute('style');
+    node.removeAttribute('class');
+    node.removeAttribute('id');
+  });
+
+  // Keep scene prose visually consistent by flattening headings to paragraphs.
+  tmp.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((heading) => {
+    const p = document.createElement('p');
+    p.innerHTML = heading.innerHTML;
+    heading.replaceWith(p);
+  });
+
+  const cleaned = tmp.innerHTML.trim();
+  if (!cleaned) return '<p><br></p>';
+
+  // Force base weight to normal so insertion never inherits an active bold state.
+  return `<div style="font-weight:400;">${cleaned}</div>`;
 }
 
 function appendAIMessage(role, text, streaming = false) {

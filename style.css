@@ -835,6 +835,33 @@ html, body {
   outline: none;
   border-color: var(--gold);
 }
+.ss-cap-input {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ss-cap-input label {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+.ss-cap-input select {
+  width: 230px;
+  background: var(--bg-mid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 7px 10px;
+}
+.ss-cap-input select:focus {
+  outline: none;
+  border-color: var(--gold);
+}
 
 /* Short story progress bar in topbar */
 #topbar-wc-area { display: flex; align-items: center; }
