@@ -60,6 +60,12 @@ function isShortStoryStrictCap(proj) {
   return !!proj?.ssStrictCap;
 }
 
+function getShortStoryOverageLimit(proj) {
+  const ssMax = proj?.ssMax ?? 2500;
+  // Allow a bounded finish window, not unlimited spillover.
+  return Math.min(450, Math.max(120, Math.round(ssMax * 0.15)));
+}
+
 function shortStoryPartSpanLabel(partCount) {
   if (partCount <= 2) return 'Parts 1 and 2';
   return `Parts 1 through ${partCount}`;
@@ -1156,6 +1162,342 @@ function saveCurrentScene() {
     renderChapterSidebar();
   }
 }
+
+function escapeRegExp(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildFindRegex(query, caseSensitive, wholeWord = false) {
+  const escaped = escapeRegExp(query);
+  const pattern = wholeWord ? `\\b${escaped}\\b` : escaped;
+  return new RegExp(pattern, caseSensitive ? 'g' : 'gi');
+}
+
+function countInText(text, regex) {
+  if (!text) return 0;
+  regex.lastIndex = 0;
+  const m = String(text).match(regex);
+  return m ? m.length : 0;
+}
+
+function replaceInText(text, regex, replacement) {
+  if (!text) return { text: text || '', count: 0 };
+  const count = countInText(text, regex);
+  if (!count) return { text, count: 0 };
+  regex.lastIndex = 0;
+  return { text: String(text).replace(regex, replacement), count };
+}
+
+function replaceInHtmlTextNodes(html, regex, replacement) {
+  const root = document.createElement('div');
+  root.innerHTML = html || '';
+  let count = 0;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let node = walker.nextNode();
+  while (node) {
+    nodes.push(node);
+    node = walker.nextNode();
+  }
+  nodes.forEach((textNode) => {
+    const src = textNode.nodeValue || '';
+    const hits = countInText(src, regex);
+    if (!hits) return;
+    count += hits;
+    regex.lastIndex = 0;
+    textNode.nodeValue = src.replace(regex, replacement);
+  });
+  return { html: root.innerHTML, count };
+}
+
+function persistOpenCodexEntryDraft() {
+  const proj = getProject();
+  if (!proj || !STATE.currentCodexId) return;
+  const form = document.getElementById('codex-entry-form');
+  if (!form || form.classList.contains('hidden')) return;
+  const entry = proj.codex.find(e => e.id === STATE.currentCodexId);
+  if (!entry) return;
+  entry.name = document.getElementById('codex-entry-name').value || 'Unnamed';
+  entry.description = document.getElementById('codex-entry-desc').innerHTML;
+  entry.role = document.getElementById('codex-entry-role').value;
+  entry.notes = document.getElementById('codex-entry-notes').innerHTML;
+  const checkedCtx = document.querySelector('input[name="codex-ai-ctx"]:checked');
+  entry.aiContext = checkedCtx ? checkedCtx.value : 'auto';
+}
+
+function getFindReplaceScope() {
+  return {
+    scenes: !!document.getElementById('find-scope-scenes').checked,
+    scenesCurrentOnly: !!document.getElementById('find-scope-scenes').checked &&
+      !!document.getElementById('find-scope-scenes-current').checked,
+    codex: !!document.getElementById('find-scope-codex').checked,
+    codexCurrentOnly: !!document.getElementById('find-scope-codex').checked &&
+      !!document.getElementById('find-scope-codex-current').checked,
+    caseSensitive: !!document.getElementById('find-case-sensitive').checked,
+    wholeWord: !!document.getElementById('find-whole-word').checked,
+  };
+}
+
+function setFindReplaceStatus(msg) {
+  const el = document.getElementById('find-replace-status');
+  if (el) el.textContent = msg;
+}
+
+function renderFindPreview(items) {
+  const el = document.getElementById('find-replace-preview');
+  if (!el) return;
+  if (!items.length) {
+    el.innerHTML = '<div class="find-preview-empty">No matches to preview.</div>';
+    return;
+  }
+  el.innerHTML = items.map((item) => `
+    <div class="find-preview-item">
+      <div class="find-preview-loc">${esc(item.location)}</div>
+      <div class="find-preview-snippet">${esc(item.pre)}<mark>${esc(item.match)}</mark>${esc(item.post)}</div>
+    </div>
+  `).join('');
+}
+
+function buildPreviewSnippets(text, regex, location, max = 3) {
+  const snippets = [];
+  if (!text) return snippets;
+  regex.lastIndex = 0;
+  let match = regex.exec(text);
+  while (match && snippets.length < max) {
+    const start = match.index;
+    const found = match[0];
+    const end = start + found.length;
+    const pre = text.slice(Math.max(0, start - 32), start);
+    const post = text.slice(end, Math.min(text.length, end + 42));
+    snippets.push({ location, pre, match: found, post });
+    if (regex.lastIndex === match.index) regex.lastIndex += 1;
+    match = regex.exec(text);
+  }
+  return snippets;
+}
+
+function getFindTargets(proj, scope) {
+  const targets = [];
+  if (scope.scenes) {
+    if (scope.scenesCurrentOnly) {
+      const ch = getChapter(STATE.currentChapterId);
+      const sc = getScene(STATE.currentChapterId, STATE.currentSceneId);
+      if (sc) {
+        targets.push({
+          group: 'Scenes',
+          mode: 'plain',
+          location: `Scene Title: ${sc.title || 'Untitled Scene'}`,
+          get: () => sc.title || '',
+          set: (v) => { sc.title = v; },
+        });
+        targets.push({
+          group: 'Scenes',
+          mode: 'html',
+          location: `Scene Content: ${(ch?.title || 'Chapter')} › ${sc.title || 'Untitled Scene'}`,
+          get: () => sc.content || '',
+          set: (v) => { sc.content = v; },
+        });
+      }
+    } else {
+      (proj.chapters || []).forEach((ch) => {
+        targets.push({
+          group: 'Scenes',
+          mode: 'plain',
+          location: `Chapter Title: ${ch.title || 'Untitled Chapter'}`,
+          get: () => ch.title || '',
+          set: (v) => { ch.title = v; },
+        });
+        (ch.scenes || []).forEach((sc) => {
+          targets.push({
+            group: 'Scenes',
+            mode: 'plain',
+            location: `Scene Title: ${(ch.title || 'Chapter')} › ${sc.title || 'Untitled Scene'}`,
+            get: () => sc.title || '',
+            set: (v) => { sc.title = v; },
+          });
+          targets.push({
+            group: 'Scenes',
+            mode: 'html',
+            location: `Scene Content: ${(ch.title || 'Chapter')} › ${sc.title || 'Untitled Scene'}`,
+            get: () => sc.content || '',
+            set: (v) => { sc.content = v; },
+          });
+        });
+      });
+    }
+  }
+
+  if (scope.codex) {
+    const codexEntries = scope.codexCurrentOnly
+      ? (proj.codex || []).filter(e => e.id === STATE.currentCodexId)
+      : (proj.codex || []);
+    codexEntries.forEach((entry) => {
+      const label = `${entry.category || 'Entry'}: ${entry.name || 'Unnamed'}`;
+      targets.push({
+        group: 'Codex',
+        mode: 'plain',
+        location: `${label} (Name)`,
+        get: () => entry.name || '',
+        set: (v) => { entry.name = v; },
+      });
+      targets.push({
+        group: 'Codex',
+        mode: 'plain',
+        location: `${label} (Role)`,
+        get: () => entry.role || '',
+        set: (v) => { entry.role = v; },
+      });
+      targets.push({
+        group: 'Codex',
+        mode: 'html',
+        location: `${label} (Description)`,
+        get: () => entry.description || '',
+        set: (v) => { entry.description = v; },
+      });
+      targets.push({
+        group: 'Codex',
+        mode: 'html',
+        location: `${label} (Notes)`,
+        get: () => entry.notes || '',
+        set: (v) => { entry.notes = v; },
+      });
+    });
+  }
+
+  return targets;
+}
+
+function scanProjectMatches(proj, regex, scope) {
+  let sceneHits = 0;
+  let codexHits = 0;
+  const preview = [];
+  const targets = getFindTargets(proj, scope);
+
+  targets.forEach((target) => {
+    const raw = target.get();
+    const text = target.mode === 'html' ? htmlToText(raw) : raw;
+    const hits = countInText(text, regex);
+    if (!hits) return;
+    if (target.group === 'Scenes') sceneHits += hits;
+    else codexHits += hits;
+    if (preview.length < 40) {
+      const left = 40 - preview.length;
+      preview.push(...buildPreviewSnippets(text, regex, target.location, Math.min(3, left)));
+    }
+  });
+
+  return { sceneHits, codexHits, total: sceneHits + codexHits, preview };
+}
+
+function replaceProjectMatches(proj, regex, replacement, scope) {
+  let sceneReplacements = 0;
+  let codexReplacements = 0;
+  const targets = getFindTargets(proj, scope);
+
+  targets.forEach((target) => {
+    if (target.mode === 'html') {
+      const htmlRes = replaceInHtmlTextNodes(target.get() || '', regex, replacement);
+      target.set(htmlRes.html);
+      if (target.group === 'Scenes') sceneReplacements += htmlRes.count;
+      else codexReplacements += htmlRes.count;
+    } else {
+      const res = replaceInText(target.get() || '', regex, replacement);
+      target.set(res.text);
+      if (target.group === 'Scenes') sceneReplacements += res.count;
+      else codexReplacements += res.count;
+    }
+  });
+
+  return { sceneReplacements, codexReplacements, total: sceneReplacements + codexReplacements };
+}
+
+function refreshAfterFindReplace() {
+  renderChapterSidebar();
+  updateEditorView();
+  updateTotalWC();
+  if (STATE.currentPanel === 'codex') {
+    renderCodexList();
+    if (STATE.currentCodexId) loadCodexEntry(STATE.currentCodexId);
+  }
+}
+
+function runFindReplaceCount() {
+  saveCurrentScene();
+  persistOpenCodexEntryDraft();
+  const proj = getProject();
+  if (!proj) return;
+  const query = document.getElementById('find-query-input').value;
+  const scope = getFindReplaceScope();
+  if (!scope.scenes && !scope.codex) {
+    setFindReplaceStatus('Select at least one scope: Scenes or Codex entries.');
+    renderFindPreview([]);
+    return;
+  }
+  if (!query.trim()) {
+    setFindReplaceStatus('Enter text to find.');
+    renderFindPreview([]);
+    return;
+  }
+  const regex = buildFindRegex(query.trim(), scope.caseSensitive, scope.wholeWord);
+  const counts = scanProjectMatches(proj, regex, scope);
+  renderFindPreview(counts.preview || []);
+  setFindReplaceStatus(`Found ${counts.total.toLocaleString()} matches (Scenes: ${counts.sceneHits.toLocaleString()}, Codex: ${counts.codexHits.toLocaleString()}).`);
+}
+
+function runFindReplaceAll() {
+  saveCurrentScene();
+  persistOpenCodexEntryDraft();
+  const proj = getProject();
+  if (!proj) return;
+  const query = document.getElementById('find-query-input').value;
+  const replacement = document.getElementById('replace-query-input').value || '';
+  const scope = getFindReplaceScope();
+  if (!scope.scenes && !scope.codex) {
+    setFindReplaceStatus('Select at least one scope: Scenes or Codex entries.');
+    renderFindPreview([]);
+    return;
+  }
+  if (!query.trim()) {
+    setFindReplaceStatus('Enter text to find.');
+    renderFindPreview([]);
+    return;
+  }
+  const regex = buildFindRegex(query.trim(), scope.caseSensitive, scope.wholeWord);
+  const replaced = replaceProjectMatches(proj, regex, replacement, scope);
+  save();
+  refreshAfterFindReplace();
+  renderFindPreview([]);
+  setFindReplaceStatus(`Replaced ${replaced.total.toLocaleString()} matches (Scenes: ${replaced.sceneReplacements.toLocaleString()}, Codex: ${replaced.codexReplacements.toLocaleString()}).`);
+}
+
+document.getElementById('find-replace-btn').addEventListener('click', () => {
+  document.getElementById('find-replace-modal').classList.remove('hidden');
+  setFindReplaceStatus('Ready.');
+  renderFindPreview([]);
+  document.getElementById('find-query-input').focus();
+});
+
+document.getElementById('close-find-replace-x').addEventListener('click', () => {
+  document.getElementById('find-replace-modal').classList.add('hidden');
+});
+
+document.getElementById('find-count-btn').addEventListener('click', runFindReplaceCount);
+document.getElementById('replace-all-btn').addEventListener('click', runFindReplaceAll);
+document.getElementById('find-query-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); runFindReplaceCount(); }
+});
+document.getElementById('find-scope-scenes').addEventListener('change', (e) => {
+  if (!e.target.checked) document.getElementById('find-scope-scenes-current').checked = false;
+});
+document.getElementById('find-scope-scenes-current').addEventListener('change', (e) => {
+  if (e.target.checked) document.getElementById('find-scope-scenes').checked = true;
+});
+document.getElementById('find-scope-codex').addEventListener('change', (e) => {
+  if (!e.target.checked) document.getElementById('find-scope-codex-current').checked = false;
+});
+document.getElementById('find-scope-codex-current').addEventListener('change', (e) => {
+  if (e.target.checked) document.getElementById('find-scope-codex').checked = true;
+});
 
 // Back to chapter from scene
 document.getElementById('back-to-chapter-btn').addEventListener('click', () => {
@@ -3238,8 +3580,16 @@ async function sendAIMessage() {
       if (AI.wordTarget > remaining) {
         AI.wordTarget = Math.max(50, remaining);
       }
-    } else if (wc > ssMax + 400) {
-      showAIError(`This short story is already ${wc.toLocaleString()} words (target max ${ssMax.toLocaleString()}). Continuing anyway so you can finish cleanly.`);
+    } else {
+      const overageLimit = getShortStoryOverageLimit(proj);
+      const remainingWithOverage = (ssMax + overageLimit) - wc;
+      if (remainingWithOverage <= 0) {
+        showAIError(`Allow clean overage has reached its limit (${(ssMax + overageLimit).toLocaleString()} words max for this story). Trim existing text or raise the short-story max before continuing.`);
+        return;
+      }
+      if (AI.wordTarget > remainingWithOverage) {
+        AI.wordTarget = Math.max(50, remainingWithOverage);
+      }
     }
   }
 
@@ -3568,18 +3918,19 @@ function buildSystemPrompt() {
     const ssMax = proj.ssMax ?? 2500;
     const ssPartCount = getShortStoryPartCount(proj);
     const strictCap = isShortStoryStrictCap(proj);
+    const overageLimit = getShortStoryOverageLimit(proj);
     const wc = projectWordCount(proj);
     const remaining = Math.max(0, ssMax - wc);
     ctx += `SHORT STORY CONSTRAINTS:\n`;
     ctx += `• Target range: ${ssMin.toLocaleString()}–${ssMax.toLocaleString()} words total\n`;
     ctx += `• Part count: ${ssPartCount} parts (Part 1 through Part ${ssPartCount})\n`;
-    ctx += `• Cap behavior: ${strictCap ? 'Strict cap (do not exceed max)' : 'Allow clean overage to finish a part coherently'}\n`;
+    ctx += `• Cap behavior: ${strictCap ? 'Strict cap (do not exceed max)' : `Allow clean overage (up to +${overageLimit.toLocaleString()} words beyond max)`}\n`;
     ctx += `• Words written so far: ${wc.toLocaleString()}\n`;
     ctx += `• Remaining budget: ${remaining.toLocaleString()} words\n`;
     if (remaining < 300 && strictCap) {
       ctx += `• ⚠ BUDGET ALMOST EXHAUSTED — end cleanly within the remaining budget. Do NOT exceed max.\n`;
     } else if (remaining < 300) {
-      ctx += `• ⚠ BUDGET ALMOST EXHAUSTED — prioritize a clean ending soon. If needed for coherence, a small overage is acceptable.\n`;
+      ctx += `• ⚠ BUDGET ALMOST EXHAUSTED — prioritize a clean ending soon. If needed for coherence, overage is allowed only up to +${overageLimit.toLocaleString()} words above max.\n`;
     } else {
       ctx += `• Write content that fits naturally within this budget. Pace accordingly.\n`;
     }
@@ -3595,7 +3946,8 @@ function buildSystemPrompt() {
     if (isShortStoryStrictCap(proj)) {
       ctx += `TARGET LENGTH: Aim for approximately ${AI.wordTarget} words for this single part or excerpt. Stay within remaining budget and do not exceed max. Stop after one part only.\n\n`;
     } else {
-      ctx += `TARGET LENGTH: Aim for approximately ${AI.wordTarget} words for this single part or excerpt. Prefer staying near budget, but do not cut off abruptly. Finish the part cleanly, then stop after one part only.\n\n`;
+      const overageLimit = getShortStoryOverageLimit(proj);
+      ctx += `TARGET LENGTH: Aim for approximately ${AI.wordTarget} words for this single part or excerpt. Prefer staying near budget, but do not cut off abruptly. Finish the part cleanly and keep total story length within max + ${overageLimit.toLocaleString()} words.\n\n`;
     }
   } else {
     ctx += `TARGET LENGTH: You MUST write exactly ${AI.wordTarget} words, count carefully. Do not stop early. Do not summarize or truncate. Keep writing until you reach ${AI.wordTarget} words.\n\n`;
