@@ -66,6 +66,60 @@ function getShortStoryOverageLimit(proj) {
   return Math.min(450, Math.max(120, Math.round(ssMax * 0.15)));
 }
 
+function getShortStoryAbsoluteMax(proj) {
+  const ssMax = proj?.ssMax ?? 2500;
+  return isShortStoryStrictCap(proj) ? ssMax : ssMax + getShortStoryOverageLimit(proj);
+}
+
+function getShortStoryRemainingWords(proj, addedText = '') {
+  const absoluteMax = getShortStoryAbsoluteMax(proj);
+  const current = projectWordCount(proj);
+  const added = countWords(addedText || '');
+  return Math.max(0, absoluteMax - current - added);
+}
+
+function collectProjectPlainText(proj) {
+  const chunks = [];
+  (proj?.chapters || []).forEach((ch) => {
+    if (ch?.title) chunks.push(ch.title);
+    (ch?.scenes || []).forEach((sc) => {
+      if (sc?.title) chunks.push(sc.title);
+      if (sc?.content) chunks.push(htmlToText(sc.content));
+    });
+  });
+  return chunks.join('\n');
+}
+
+function getHighestPartNumberInProject(proj) {
+  const text = collectProjectPlainText(proj);
+  const re = /\bPart\s+(\d+)\b/gi;
+  let match = re.exec(text);
+  let highest = 0;
+  while (match) {
+    const n = parseInt(match[1], 10);
+    if (Number.isFinite(n)) highest = Math.max(highest, n);
+    match = re.exec(text);
+  }
+  return highest;
+}
+
+function computeShortStoryTurnPlan(proj) {
+  const partMax = getShortStoryPartCount(proj);
+  const highestPart = getHighestPartNumberInProject(proj);
+  const nextPart = Math.min(partMax, highestPart + 1);
+  const isFinalPart = nextPart >= partMax;
+  const remaining = getShortStoryRemainingWords(proj);
+  let wordBudget = AI.wordTarget || 150;
+  if (isFinalPart) {
+    // Give the model room to finish the ending cleanly.
+    wordBudget = Math.max(wordBudget, Math.min(1000, Math.max(280, remaining)));
+  } else {
+    wordBudget = Math.max(wordBudget, 120);
+  }
+  wordBudget = Math.min(wordBudget, Math.max(60, remaining));
+  return { partMax, highestPart, nextPart, isFinalPart, remaining, wordBudget };
+}
+
 function shortStoryPartSpanLabel(partCount) {
   if (partCount <= 2) return 'Parts 1 and 2';
   return `Parts 1 through ${partCount}`;
@@ -197,9 +251,18 @@ function removeAiIsmHighlights(root) {
   root.normalize();
 }
 
+function removeFindHighlights(root) {
+  if (!root) return;
+  root.querySelectorAll('.find-hit').forEach((span) => {
+    span.replaceWith(document.createTextNode(span.textContent || ''));
+  });
+  root.normalize();
+}
+
 function getCleanSceneHtml(el) {
   const clone = el.cloneNode(true);
   removeAiIsmHighlights(clone);
+  removeFindHighlights(clone);
   return clone.innerHTML;
 }
 
@@ -1217,25 +1280,16 @@ function persistOpenCodexEntryDraft() {
   if (!form || form.classList.contains('hidden')) return;
   const entry = proj.codex.find(e => e.id === STATE.currentCodexId);
   if (!entry) return;
+  const descClone = document.getElementById('codex-entry-desc').cloneNode(true);
+  removeFindHighlights(descClone);
+  const notesClone = document.getElementById('codex-entry-notes').cloneNode(true);
+  removeFindHighlights(notesClone);
   entry.name = document.getElementById('codex-entry-name').value || 'Unnamed';
-  entry.description = document.getElementById('codex-entry-desc').innerHTML;
+  entry.description = descClone.innerHTML;
   entry.role = document.getElementById('codex-entry-role').value;
-  entry.notes = document.getElementById('codex-entry-notes').innerHTML;
+  entry.notes = notesClone.innerHTML;
   const checkedCtx = document.querySelector('input[name="codex-ai-ctx"]:checked');
   entry.aiContext = checkedCtx ? checkedCtx.value : 'auto';
-}
-
-function getFindReplaceScope() {
-  return {
-    scenes: !!document.getElementById('find-scope-scenes').checked,
-    scenesCurrentOnly: !!document.getElementById('find-scope-scenes').checked &&
-      !!document.getElementById('find-scope-scenes-current').checked,
-    codex: !!document.getElementById('find-scope-codex').checked,
-    codexCurrentOnly: !!document.getElementById('find-scope-codex').checked &&
-      !!document.getElementById('find-scope-codex-current').checked,
-    caseSensitive: !!document.getElementById('find-case-sensitive').checked,
-    wholeWord: !!document.getElementById('find-whole-word').checked,
-  };
 }
 
 function setFindReplaceStatus(msg) {
@@ -1243,172 +1297,107 @@ function setFindReplaceStatus(msg) {
   if (el) el.textContent = msg;
 }
 
-function renderFindPreview(items) {
-  const el = document.getElementById('find-replace-preview');
-  if (!el) return;
-  if (!items.length) {
-    el.innerHTML = '<div class="find-preview-empty">No matches to preview.</div>';
-    return;
-  }
-  el.innerHTML = items.map((item) => `
-    <div class="find-preview-item">
-      <div class="find-preview-loc">${esc(item.location)}</div>
-      <div class="find-preview-snippet">${esc(item.pre)}<mark>${esc(item.match)}</mark>${esc(item.post)}</div>
-    </div>
-  `).join('');
-}
-
-function buildPreviewSnippets(text, regex, location, max = 3) {
-  const snippets = [];
-  if (!text) return snippets;
-  regex.lastIndex = 0;
-  let match = regex.exec(text);
-  while (match && snippets.length < max) {
-    const start = match.index;
-    const found = match[0];
-    const end = start + found.length;
-    const pre = text.slice(Math.max(0, start - 32), start);
-    const post = text.slice(end, Math.min(text.length, end + 42));
-    snippets.push({ location, pre, match: found, post });
-    if (regex.lastIndex === match.index) regex.lastIndex += 1;
-    match = regex.exec(text);
-  }
-  return snippets;
-}
-
-function getFindTargets(proj, scope) {
+function getFindTargets(proj) {
   const targets = [];
-  if (scope.scenes) {
-    if (scope.scenesCurrentOnly) {
-      const ch = getChapter(STATE.currentChapterId);
-      const sc = getScene(STATE.currentChapterId, STATE.currentSceneId);
-      if (sc) {
-        targets.push({
-          group: 'Scenes',
-          mode: 'plain',
-          location: `Scene Title: ${sc.title || 'Untitled Scene'}`,
-          get: () => sc.title || '',
-          set: (v) => { sc.title = v; },
-        });
-        targets.push({
-          group: 'Scenes',
-          mode: 'html',
-          location: `Scene Content: ${(ch?.title || 'Chapter')} › ${sc.title || 'Untitled Scene'}`,
-          get: () => sc.content || '',
-          set: (v) => { sc.content = v; },
-        });
-      }
-    } else {
-      (proj.chapters || []).forEach((ch) => {
-        targets.push({
-          group: 'Scenes',
-          mode: 'plain',
-          location: `Chapter Title: ${ch.title || 'Untitled Chapter'}`,
-          get: () => ch.title || '',
-          set: (v) => { ch.title = v; },
-        });
-        (ch.scenes || []).forEach((sc) => {
-          targets.push({
-            group: 'Scenes',
-            mode: 'plain',
-            location: `Scene Title: ${(ch.title || 'Chapter')} › ${sc.title || 'Untitled Scene'}`,
-            get: () => sc.title || '',
-            set: (v) => { sc.title = v; },
-          });
-          targets.push({
-            group: 'Scenes',
-            mode: 'html',
-            location: `Scene Content: ${(ch.title || 'Chapter')} › ${sc.title || 'Untitled Scene'}`,
-            get: () => sc.content || '',
-            set: (v) => { sc.content = v; },
-          });
-        });
-      });
-    }
+  if (STATE.currentPanel === 'manuscript') {
+    const sc = getScene(STATE.currentChapterId, STATE.currentSceneId);
+    if (!sc) return targets;
+    targets.push({
+      group: 'Scenes',
+      mode: 'html',
+      elementId: 'scene-content',
+      location: `Scene: ${sc.title || 'Untitled Scene'}`,
+      get: () => sc.content || '',
+      set: (v) => { sc.content = v; },
+    });
+    return targets;
   }
 
-  if (scope.codex) {
-    const codexEntries = scope.codexCurrentOnly
-      ? (proj.codex || []).filter(e => e.id === STATE.currentCodexId)
-      : (proj.codex || []);
-    codexEntries.forEach((entry) => {
-      const label = `${entry.category || 'Entry'}: ${entry.name || 'Unnamed'}`;
-      targets.push({
-        group: 'Codex',
-        mode: 'plain',
-        location: `${label} (Name)`,
-        get: () => entry.name || '',
-        set: (v) => { entry.name = v; },
-      });
-      targets.push({
-        group: 'Codex',
-        mode: 'plain',
-        location: `${label} (Role)`,
-        get: () => entry.role || '',
-        set: (v) => { entry.role = v; },
-      });
-      targets.push({
-        group: 'Codex',
-        mode: 'html',
-        location: `${label} (Description)`,
-        get: () => entry.description || '',
-        set: (v) => { entry.description = v; },
-      });
-      targets.push({
-        group: 'Codex',
-        mode: 'html',
-        location: `${label} (Notes)`,
-        get: () => entry.notes || '',
-        set: (v) => { entry.notes = v; },
-      });
+  if (STATE.currentPanel === 'codex') {
+    const entry = (proj.codex || []).find(e => e.id === STATE.currentCodexId);
+    if (!entry) return targets;
+    const label = `${entry.category || 'Entry'}: ${entry.name || 'Unnamed'}`;
+    targets.push({
+      group: 'Codex',
+      mode: 'html',
+      elementId: 'codex-entry-desc',
+      location: `${label} (Description)`,
+      get: () => entry.description || '',
+      set: (v) => { entry.description = v; },
     });
+    targets.push({
+      group: 'Codex',
+      mode: 'html',
+      elementId: 'codex-entry-notes',
+      location: `${label} (Notes)`,
+      get: () => entry.notes || '',
+      set: (v) => { entry.notes = v; },
+    });
+    return targets;
   }
 
   return targets;
 }
 
-function scanProjectMatches(proj, regex, scope) {
-  let sceneHits = 0;
-  let codexHits = 0;
-  const preview = [];
-  const targets = getFindTargets(proj, scope);
-
-  targets.forEach((target) => {
-    const raw = target.get();
-    const text = target.mode === 'html' ? htmlToText(raw) : raw;
-    const hits = countInText(text, regex);
-    if (!hits) return;
-    if (target.group === 'Scenes') sceneHits += hits;
-    else codexHits += hits;
-    if (preview.length < 40) {
-      const left = 40 - preview.length;
-      preview.push(...buildPreviewSnippets(text, regex, target.location, Math.min(3, left)));
-    }
+function highlightFindInElement(root, regex) {
+  if (!root) return 0;
+  removeFindHighlights(root);
+  let count = 0;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+      if (node.parentElement && node.parentElement.closest('.find-hit')) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
   });
-
-  return { sceneHits, codexHits, total: sceneHits + codexHits, preview };
+  const nodes = [];
+  let node = walker.nextNode();
+  while (node) {
+    nodes.push(node);
+    node = walker.nextNode();
+  }
+  nodes.forEach((textNode) => {
+    const text = textNode.nodeValue || '';
+    regex.lastIndex = 0;
+    const first = regex.exec(text);
+    if (!first) return;
+    regex.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let match = regex.exec(text);
+    while (match) {
+      const start = match.index;
+      const found = match[0];
+      if (start > last) frag.appendChild(document.createTextNode(text.slice(last, start)));
+      const span = document.createElement('span');
+      span.className = 'find-hit';
+      span.textContent = found;
+      frag.appendChild(span);
+      count += 1;
+      last = start + found.length;
+      match = regex.exec(text);
+    }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    textNode.parentNode.replaceChild(frag, textNode);
+  });
+  return count;
 }
 
-function replaceProjectMatches(proj, regex, replacement, scope) {
-  let sceneReplacements = 0;
-  let codexReplacements = 0;
-  const targets = getFindTargets(proj, scope);
-
-  targets.forEach((target) => {
-    if (target.mode === 'html') {
-      const htmlRes = replaceInHtmlTextNodes(target.get() || '', regex, replacement);
-      target.set(htmlRes.html);
-      if (target.group === 'Scenes') sceneReplacements += htmlRes.count;
-      else codexReplacements += htmlRes.count;
-    } else {
-      const res = replaceInText(target.get() || '', regex, replacement);
-      target.set(res.text);
-      if (target.group === 'Scenes') sceneReplacements += res.count;
-      else codexReplacements += res.count;
-    }
-  });
-
-  return { sceneReplacements, codexReplacements, total: sceneReplacements + codexReplacements };
+function clearFindSession({ keepModal = false } = {}) {
+  const proj = getProject();
+  if (proj) {
+    getFindTargets(proj).forEach((target) => {
+      if (!target.elementId) return;
+      const el = document.getElementById(target.elementId);
+      if (el) removeFindHighlights(el);
+    });
+  }
+  document.getElementById('find-query-input').value = '';
+  document.getElementById('replace-query-input').value = '';
+  setFindReplaceStatus('Ready.');
+  if (!keepModal) {
+    document.getElementById('find-replace-modal').classList.add('hidden');
+  }
 }
 
 function refreshAfterFindReplace() {
@@ -1426,22 +1415,31 @@ function runFindReplaceCount() {
   persistOpenCodexEntryDraft();
   const proj = getProject();
   if (!proj) return;
-  const query = document.getElementById('find-query-input').value;
-  const scope = getFindReplaceScope();
-  if (!scope.scenes && !scope.codex) {
-    setFindReplaceStatus('Select at least one scope: Scenes or Codex entries.');
-    renderFindPreview([]);
+  const query = document.getElementById('find-query-input').value.trim();
+  const targets = getFindTargets(proj);
+  if (!targets.length) {
+    setFindReplaceStatus('Open a scene or codex entry first.');
     return;
   }
-  if (!query.trim()) {
+  if (!query) {
     setFindReplaceStatus('Enter text to find.');
-    renderFindPreview([]);
     return;
   }
-  const regex = buildFindRegex(query.trim(), scope.caseSensitive, scope.wholeWord);
-  const counts = scanProjectMatches(proj, regex, scope);
-  renderFindPreview(counts.preview || []);
-  setFindReplaceStatus(`Found ${counts.total.toLocaleString()} matches (Scenes: ${counts.sceneHits.toLocaleString()}, Codex: ${counts.codexHits.toLocaleString()}).`);
+  const regex = buildFindRegex(
+    query,
+    !!document.getElementById('find-case-sensitive').checked,
+    !!document.getElementById('find-whole-word').checked
+  );
+  let total = 0;
+  targets.forEach((target) => {
+    if (!target.elementId) return;
+    const el = document.getElementById(target.elementId);
+    if (!el) return;
+    total += highlightFindInElement(el, regex);
+  });
+  const firstHit = document.querySelector('.find-hit');
+  if (firstHit) firstHit.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  setFindReplaceStatus(`Found ${total.toLocaleString()} matches in current ${STATE.currentPanel === 'codex' ? 'codex entry' : 'scene'}.`);
 }
 
 function runFindReplaceAll() {
@@ -1449,36 +1447,42 @@ function runFindReplaceAll() {
   persistOpenCodexEntryDraft();
   const proj = getProject();
   if (!proj) return;
-  const query = document.getElementById('find-query-input').value;
+  const query = document.getElementById('find-query-input').value.trim();
   const replacement = document.getElementById('replace-query-input').value || '';
-  const scope = getFindReplaceScope();
-  if (!scope.scenes && !scope.codex) {
-    setFindReplaceStatus('Select at least one scope: Scenes or Codex entries.');
-    renderFindPreview([]);
+  const targets = getFindTargets(proj);
+  if (!targets.length) {
+    setFindReplaceStatus('Open a scene or codex entry first.');
     return;
   }
-  if (!query.trim()) {
+  if (!query) {
     setFindReplaceStatus('Enter text to find.');
-    renderFindPreview([]);
     return;
   }
-  const regex = buildFindRegex(query.trim(), scope.caseSensitive, scope.wholeWord);
-  const replaced = replaceProjectMatches(proj, regex, replacement, scope);
+  const regex = buildFindRegex(
+    query,
+    !!document.getElementById('find-case-sensitive').checked,
+    !!document.getElementById('find-whole-word').checked
+  );
+  let replacedTotal = 0;
+  targets.forEach((target) => {
+    const htmlRes = replaceInHtmlTextNodes(target.get() || '', regex, replacement);
+    target.set(htmlRes.html);
+    replacedTotal += htmlRes.count;
+  });
   save();
   refreshAfterFindReplace();
-  renderFindPreview([]);
-  setFindReplaceStatus(`Replaced ${replaced.total.toLocaleString()} matches (Scenes: ${replaced.sceneReplacements.toLocaleString()}, Codex: ${replaced.codexReplacements.toLocaleString()}).`);
+  runFindReplaceCount();
+  setFindReplaceStatus(`Replaced ${replacedTotal.toLocaleString()} matches in current ${STATE.currentPanel === 'codex' ? 'codex entry' : 'scene'}.`);
 }
 
 document.getElementById('find-replace-btn').addEventListener('click', () => {
   document.getElementById('find-replace-modal').classList.remove('hidden');
   setFindReplaceStatus('Ready.');
-  renderFindPreview([]);
   document.getElementById('find-query-input').focus();
 });
 
 document.getElementById('close-find-replace-x').addEventListener('click', () => {
-  document.getElementById('find-replace-modal').classList.add('hidden');
+  clearFindSession();
 });
 
 document.getElementById('find-count-btn').addEventListener('click', runFindReplaceCount);
@@ -1486,17 +1490,26 @@ document.getElementById('replace-all-btn').addEventListener('click', runFindRepl
 document.getElementById('find-query-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); runFindReplaceCount(); }
 });
-document.getElementById('find-scope-scenes').addEventListener('change', (e) => {
-  if (!e.target.checked) document.getElementById('find-scope-scenes-current').checked = false;
+document.getElementById('find-query-input').addEventListener('input', () => {
+  const q = document.getElementById('find-query-input').value.trim();
+  if (!q) {
+    const proj = getProject();
+    if (proj) getFindTargets(proj).forEach((target) => {
+      const el = document.getElementById(target.elementId);
+      if (el) removeFindHighlights(el);
+    });
+    setFindReplaceStatus('Ready.');
+  } else {
+    runFindReplaceCount();
+  }
 });
-document.getElementById('find-scope-scenes-current').addEventListener('change', (e) => {
-  if (e.target.checked) document.getElementById('find-scope-scenes').checked = true;
+document.getElementById('find-case-sensitive').addEventListener('change', () => {
+  const q = document.getElementById('find-query-input').value.trim();
+  if (q) runFindReplaceCount();
 });
-document.getElementById('find-scope-codex').addEventListener('change', (e) => {
-  if (!e.target.checked) document.getElementById('find-scope-codex-current').checked = false;
-});
-document.getElementById('find-scope-codex-current').addEventListener('change', (e) => {
-  if (e.target.checked) document.getElementById('find-scope-codex').checked = true;
+document.getElementById('find-whole-word').addEventListener('change', () => {
+  const q = document.getElementById('find-query-input').value.trim();
+  if (q) runFindReplaceCount();
 });
 
 // Back to chapter from scene
@@ -3563,23 +3576,27 @@ async function sendAIMessage() {
   const inp = document.getElementById('ai-prompt-input');
   const userText = inp.value.trim();
   if (!userText || AI.isStreaming) return;
+  const proj = getProject();
+  let shortStoryPlan = null;
 
   // Short story budget awareness â€” never hard-stop or clamp mid-part.
   // We let the model finish naturally and handle budget as guidance.
-  const proj = getProject();
   if (proj?.storyType === 'short_story') {
     const ssMax = proj.ssMax ?? 2500;
     const wc = projectWordCount(proj);
     const strictCap = isShortStoryStrictCap(proj);
+    shortStoryPlan = computeShortStoryTurnPlan(proj);
     if (strictCap) {
       if (wc >= ssMax) {
         showAIError(`Strict cap is on and this short story is already at the max (${wc.toLocaleString()} / ${ssMax.toLocaleString()} words).`);
         return;
       }
-      const remaining = ssMax - wc;
-      if (AI.wordTarget > remaining) {
-        AI.wordTarget = Math.max(50, remaining);
+      const remaining = Math.max(0, ssMax - wc);
+      if (remaining <= 0) {
+        showAIError(`Strict cap is on and no word budget remains (${wc.toLocaleString()} / ${ssMax.toLocaleString()}).`);
+        return;
       }
+      shortStoryPlan.wordBudget = Math.min(shortStoryPlan.wordBudget, Math.max(60, remaining));
     } else {
       const overageLimit = getShortStoryOverageLimit(proj);
       const remainingWithOverage = (ssMax + overageLimit) - wc;
@@ -3587,9 +3604,7 @@ async function sendAIMessage() {
         showAIError(`Allow clean overage has reached its limit (${(ssMax + overageLimit).toLocaleString()} words max for this story). Trim existing text or raise the short-story max before continuing.`);
         return;
       }
-      if (AI.wordTarget > remainingWithOverage) {
-        AI.wordTarget = Math.max(50, remainingWithOverage);
-      }
+      shortStoryPlan.wordBudget = Math.min(shortStoryPlan.wordBudget, Math.max(60, remainingWithOverage));
     }
   }
 
@@ -3620,17 +3635,46 @@ async function sendAIMessage() {
   let fullResponse = '';
 
   try {
-    const historyForAPI = AI.conversation.slice(-12);
+    let historyForAPI = AI.conversation.slice(-12);
     const bubble = assistantEl.querySelector('.ai-msg-bubble');
     bubble.classList.add('ai-streaming');
+    const plannedWords = shortStoryPlan?.wordBudget || AI.wordTarget;
+    let maxTokens = Math.min(8000, Math.max(400, Math.round(plannedWords * 2.0)));
     fullResponse = await requestAIResponse({
       apiKey,
       modelId,
       systemPrompt,
       historyForAPI,
-      maxTokens: Math.min(8000, Math.max(400, Math.round(AI.wordTarget * 1.8 * 1.3))),
+      maxTokens,
       temperature: AI.temperature,
     });
+
+    if (proj?.storyType === 'short_story' && AI.currentMode === 'continue' && shortStoryPlan?.isFinalPart) {
+      // If the final part gets cut, auto-continue within remaining budget until we hit "The End"
+      // or exhaust safe bounds.
+      let attempts = 0;
+      while (!/\bThe End\b/i.test(fullResponse) && attempts < 2) {
+        const remain = getShortStoryRemainingWords(proj, fullResponse);
+        if (remain < 50) break;
+        const contWords = Math.min(450, remain);
+        const contMaxTokens = Math.min(8000, Math.max(220, Math.round(contWords * 2.0)));
+        historyForAPI = [...historyForAPI, { role: 'assistant', content: fullResponse }, {
+          role: 'user',
+          content: 'Continue immediately from the last line. Do not restart. Complete the ending and print "The End" as the final line.'
+        }].slice(-12);
+        const continuation = await requestAIResponse({
+          apiKey,
+          modelId,
+          systemPrompt,
+          historyForAPI,
+          maxTokens: contMaxTokens,
+          temperature: AI.temperature,
+        });
+        if (!continuation || !continuation.trim()) break;
+        fullResponse = `${fullResponse}\n\n${continuation.trim()}`;
+        attempts += 1;
+      }
+    }
     bubble.textContent = fullResponse;
     scrollAIToBottom();
 
@@ -3916,7 +3960,8 @@ function buildSystemPrompt() {
   if (isShortStory) {
     const ssMin = proj.ssMin ?? 1000;
     const ssMax = proj.ssMax ?? 2500;
-    const ssPartCount = getShortStoryPartCount(proj);
+    const plan = computeShortStoryTurnPlan(proj);
+    const ssPartCount = plan.partMax;
     const strictCap = isShortStoryStrictCap(proj);
     const overageLimit = getShortStoryOverageLimit(proj);
     const wc = projectWordCount(proj);
@@ -3924,6 +3969,7 @@ function buildSystemPrompt() {
     ctx += `SHORT STORY CONSTRAINTS:\n`;
     ctx += `• Target range: ${ssMin.toLocaleString()}–${ssMax.toLocaleString()} words total\n`;
     ctx += `• Part count: ${ssPartCount} parts (Part 1 through Part ${ssPartCount})\n`;
+    ctx += `• Expected next part: Part ${plan.nextPart}${plan.isFinalPart ? ' (final part)' : ''}\n`;
     ctx += `• Cap behavior: ${strictCap ? 'Strict cap (do not exceed max)' : `Allow clean overage (up to +${overageLimit.toLocaleString()} words beyond max)`}\n`;
     ctx += `• Words written so far: ${wc.toLocaleString()}\n`;
     ctx += `• Remaining budget: ${remaining.toLocaleString()} words\n`;
@@ -3943,11 +3989,15 @@ function buildSystemPrompt() {
   if (AI.currentMode === 'compliance') {
     ctx += `OUTPUT MODE: Return an audit, not story prose. Use concise headings and actionable notes.\n\n`;
   } else if (isShortStory && AI.currentMode === 'continue') {
+    const plan = computeShortStoryTurnPlan(proj);
     if (isShortStoryStrictCap(proj)) {
-      ctx += `TARGET LENGTH: Aim for approximately ${AI.wordTarget} words for this single part or excerpt. Stay within remaining budget and do not exceed max. Stop after one part only.\n\n`;
+      ctx += `TARGET LENGTH: Aim for approximately ${Math.max(80, plan.wordBudget)} words for this single part or excerpt. Stay within remaining budget and do not exceed max. Stop after one part only.\n\n`;
     } else {
       const overageLimit = getShortStoryOverageLimit(proj);
-      ctx += `TARGET LENGTH: Aim for approximately ${AI.wordTarget} words for this single part or excerpt. Prefer staying near budget, but do not cut off abruptly. Finish the part cleanly and keep total story length within max + ${overageLimit.toLocaleString()} words.\n\n`;
+      ctx += `TARGET LENGTH: Aim for approximately ${Math.max(80, plan.wordBudget)} words for this single part or excerpt. Prefer staying near budget, but do not cut off abruptly. Finish the part cleanly and keep total story length within max + ${overageLimit.toLocaleString()} words.\n\n`;
+      if (plan.isFinalPart) {
+        ctx += `FINAL PART RULE: This is the final part. Complete the ending in this response and end with "The End".\n\n`;
+      }
     }
   } else {
     ctx += `TARGET LENGTH: You MUST write exactly ${AI.wordTarget} words, count carefully. Do not stop early. Do not summarize or truncate. Keep writing until you reach ${AI.wordTarget} words.\n\n`;

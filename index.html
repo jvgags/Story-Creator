@@ -739,15 +739,11 @@
       </div>
       <div class="form-group">
         <label>Scope</label>
-        <label class="settings-toggle-row"><input type="checkbox" id="find-scope-scenes" checked /> <span>Scenes</span></label>
-        <label class="settings-toggle-row"><input type="checkbox" id="find-scope-scenes-current" /> <span>Current scene only</span></label>
-        <label class="settings-toggle-row"><input type="checkbox" id="find-scope-codex" checked /> <span>Codex entries</span></label>
-        <label class="settings-toggle-row"><input type="checkbox" id="find-scope-codex-current" /> <span>Current entry only</span></label>
-        <label class="settings-toggle-row"><input type="checkbox" id="find-whole-word" /> <span>Whole word</span></label>
+        <div class="settings-help-text">Searches only the current item you are in (current scene or current codex entry).</div>
+        <label class="settings-toggle-row"><input type="checkbox" id="find-whole-word" /> <span>Match whole word</span></label>
         <label class="settings-toggle-row"><input type="checkbox" id="find-case-sensitive" /> <span>Case sensitive</span></label>
       </div>
       <div id="find-replace-status" class="find-replace-status">Ready.</div>
-      <div id="find-replace-preview" class="find-replace-preview"></div>
       <div class="modal-actions">
         <button class="btn-ghost" id="find-count-btn">Search</button>
         <button class="btn-primary" id="replace-all-btn">Replace All</button>
